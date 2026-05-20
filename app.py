@@ -99,10 +99,15 @@ def _gen_code() -> str:
 # ── auth ──────────────────────────────────────────────────────
 @app.get("/login")
 def login():
-    is_mobile = request.args.get("mobile") == "true"
-    state     = request.args.get("state", secrets.token_hex(8))
-    session["oauth_state"]  = state
-    session["is_mobile"]    = is_mobile
+    is_mobile    = request.args.get("mobile") == "true"
+    state        = request.args.get("state", secrets.token_hex(8))
+    # Mobile app passes its own deep-link URL so dev builds, Expo Go, and
+    # production all get redirected to the right scheme after OAuth.
+    redirect_url = request.args.get("redirect_url", MOBILE_SCHEME)
+
+    session["oauth_state"]     = state
+    session["is_mobile"]       = is_mobile
+    session["mobile_redirect"] = redirect_url
 
     qs = urlencode({
         "client_id":     CLIENT_ID,
@@ -137,13 +142,14 @@ def callback():
     _tokens["refresh_token"] = data.get("refresh_token", "")
 
     if is_mobile:
-        # Redirect back to the app via deep link with tokens as params
+        # Use the deep-link URL the mobile app registered at login time
+        mobile_redirect = session.get("mobile_redirect", MOBILE_SCHEME)
         params = urlencode({
             "access_token":  data["access_token"],
             "refresh_token": data.get("refresh_token", ""),
             "state":         returned_state,
         })
-        return redirect(f"{MOBILE_SCHEME}?{params}")
+        return redirect(f"{mobile_redirect}?{params}")
 
     return redirect("/")
 
