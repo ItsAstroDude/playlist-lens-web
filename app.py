@@ -205,7 +205,14 @@ def artists():
 
 @app.get("/api/audio-features")
 def audio_features():
-    r = _spotify_get(f"https://api.spotify.com/v1/audio-features?ids={request.args.get('ids','')}")
+    ids = request.args.get("ids", "")
+    if not ids:
+        return jsonify({"audio_features": []}), 200
+    r = _spotify_get(f"https://api.spotify.com/v1/audio-features?ids={ids}")
+    # Spotify deprecated audio features for apps registered after Nov 2024.
+    # Return an empty list so clients degrade gracefully instead of seeing a 403.
+    if r.status_code == 403:
+        return jsonify({"audio_features": []}), 200
     return jsonify(r.json()), r.status_code
 
 # ── profile share ─────────────────────────────────────────────
