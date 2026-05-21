@@ -88,7 +88,16 @@ def _spotify_get(url: str) -> requests.Response:
     else:
         token = _tokens.get("access_token", "")
 
-    hdrs = {"Authorization": f"Bearer {token}"}
+    # Bail early rather than forwarding an empty token to Spotify —
+    # that produces a confusing 400 instead of a clean 401.
+    if not token or not token.strip():
+        from flask import make_response
+        return make_response(
+            {'error': {'status': 401, 'message': 'No authentication token. Please log in again.'}},
+            401,
+        )
+
+    hdrs = {"Authorization": f"Bearer {token.strip()}"}
     r = requests.get(url, headers=hdrs, timeout=15)
 
     # Only attempt a refresh when using the server-stored token (web flow).
