@@ -598,7 +598,7 @@ async function _runAnalysis(pl, trackData) {
     try {
       const artData = await api(`/api/artists?ids=${artistIds.join(",")}`);
       const gmap = {};
-      artData.artists.forEach(a=>(a.genres||[]).forEach(g=>{gmap[g]=(gmap[g]||0)+1;}));
+      artData.artists.forEach(a=>(a.genres||[]).forEach(g=>{const k=normalizeGenre(g);gmap[k]=(gmap[k]||0)+1;}));
       topGenres = Object.entries(gmap).sort((a,b)=>b[1]-a[1]).slice(0,16);
     } catch(_) {}
   }
@@ -845,7 +845,7 @@ async function fetchPlaylistData(plId) {
   try {
     const artData = await api(`/api/artists?ids=${Object.keys(artistMap).slice(0,50).join(",")}`);
     const gmap={};
-    artData.artists.forEach(a=>(a.genres||[]).forEach(g=>{gmap[g]=(gmap[g]||0)+1;}));
+    artData.artists.forEach(a=>(a.genres||[]).forEach(g=>{const k=normalizeGenre(g);gmap[k]=(gmap[k]||0)+1;}));
     topGenres = Object.entries(gmap).sort((a,b)=>b[1]-a[1]).slice(0,12);
   } catch(_) {}
   try {
@@ -985,7 +985,7 @@ async function generateTasteProfile() {
   try {
     const artData = await api(`/api/artists?ids=${Object.keys(artistMap).slice(0,50).join(",")}`);
     const gmap={};
-    artData.artists.forEach(a=>(a.genres||[]).forEach(g=>{gmap[g]=(gmap[g]||0)+1;}));
+    artData.artists.forEach(a=>(a.genres||[]).forEach(g=>{const k=normalizeGenre(g);gmap[k]=(gmap[k]||0)+1;}));
     topGenres = Object.entries(gmap).sort((a,b)=>b[1]-a[1]).slice(0,20);
   } catch(_) {}
   try {
@@ -1331,6 +1331,28 @@ function msToTime(ms) {
 function esc(s)     { return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return esc(s).replace(/'/g,'&#39;'); }
 function logout()   { window.location.href="/logout"; }
+
+// ── Genre normalisation ───────────────────────────────────────────────────────
+// Spotify returns many near-duplicate genre strings. Map them to a canonical
+// form before tallying so they count together instead of splitting the signal.
+function normalizeGenre(raw) {
+  let g = raw.toLowerCase().trim().replace(/\s+/g,' ').replace(/[–—]/g,'-')
+  g = g.replace(/\s+(music|sounds?)$/,'')   // strip trailing noise
+  const MAP = {
+    'jpop':'j-pop','j pop':'j-pop','japanese pop':'j-pop',
+    'kpop':'k-pop','k pop':'k-pop','korean pop':'k-pop',
+    'rnb':'r&b','r and b':'r&b','rhythm and blues':'r&b',
+    'hip hop':'hip-hop','hiphop':'hip-hop',
+    'lofi':'lo-fi','lo fi':'lo-fi','lo-fi beats':'lo-fi','lofi beats':'lo-fi',
+    'bedroom pop':'lo-fi',
+    'drum & bass':'drum and bass','drum n bass':'drum and bass','dnb':'drum and bass','d&b':'drum and bass',
+    'electronica':'electronic','electronic dance':'edm',
+    'retrowave':'synthwave','outrun':'synthwave',
+    'orchestral':'classical','orchestra':'classical',
+    'anime ost':'anime','anime score':'anime','anime soundtrack':'anime',
+  }
+  return MAP[g] ?? g
+}
 
 boot();
 </script>
