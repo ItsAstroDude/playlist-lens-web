@@ -671,7 +671,7 @@ function renderAnalytics(d) {
         ${heroImg}
         <div>
           <h1>${esc(pl.name)}</h1>
-          <p>${rawTracks.length} tracks &nbsp;·&nbsp; <b>${artistCount} artists</b> &nbsp;·&nbsp; ${msToTime(totalMs)}</p>
+          <p>${pl.tracks?.total??rawTracks.length} tracks &nbsp;·&nbsp; <b>${artistCount} artists</b> &nbsp;·&nbsp; ${msToTime(totalMs)}${pl.tracks?.total>rawTracks.length?' <span style="font-size:10px;color:#444">(top 500 analysed)</span>':''}</p>
           <div class="hero-actions">
             <a class="btn-action" href="${spotifyUrl}" target="_blank" rel="noopener">
               <svg viewBox="0 0 24 24" fill="currentColor" style="width:12px;height:12px"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
@@ -687,9 +687,9 @@ function renderAnalytics(d) {
       ${vibe?`<div class="vibe-pill">${esc(vibe)}</div>`:""}
 
       <div class="stat-row">
-        <div class="stat-card"><div class="stat-lbl">Tracks</div><div class="stat-val">${rawTracks.length}</div></div>
+        <div class="stat-card"><div class="stat-lbl">Tracks</div><div class="stat-val">${(pl.tracks?.total??rawTracks.length).toLocaleString()}</div></div>
         <div class="stat-card"><div class="stat-lbl">Artists</div><div class="stat-val">${artistCount}</div></div>
-        <div class="stat-card"><div class="stat-lbl">Total Time</div><div class="stat-val sm">${msToTime(totalMs)}</div></div>
+        <div class="stat-card"><div class="stat-lbl">Total Time</div><div class="stat-val sm">${msToTime(pl.tracks?.total>rawTracks.length?(totalMs/rawTracks.length)*(pl.tracks.total):totalMs)}</div></div>
         <div class="stat-card"><div class="stat-lbl">Avg Track</div><div class="stat-val sm">${msToTime(avgTrackMs)}</div></div>
         <div class="stat-card"><div class="stat-lbl">Avg Popularity</div><div class="stat-val">${avgPop}<span style="font-size:12px;color:#333">/100</span></div></div>
         ${af?`<div class="stat-card"><div class="stat-lbl">Avg BPM</div><div class="stat-val">${af.avgTempo}</div></div>`:""}
@@ -832,9 +832,9 @@ async function runComparison() {
 }
 
 async function fetchPlaylistData(plId) {
-  const plMeta = plId==="liked_songs" ? {id:"liked_songs",name:"Liked Songs",img:""} : (() => {
+  const plMeta = plId==="liked_songs" ? {id:"liked_songs",name:"Liked Songs",img:"",tracks:{total:0}} : (() => {
     const p = _allPlaylists.find(p=>p.id===plId);
-    return {id:p.id, name:p.name, img:p.images?.[0]?.url||""};
+    return {id:p.id, name:p.name, img:p.images?.[0]?.url||"", tracks:p.tracks};
   })();
   const trackData = await api(`/api/playlist/${plId}/tracks`);
   const rawTracks = trackData.items.map(i=>i.track).filter(Boolean);
@@ -884,9 +884,9 @@ function renderComparison(a, b) {
       <div class="cmp-h" style="color:#f06292">${esc(b.pl.name)}</div>
     </div>
     <div class="cmp-stats">
-      ${statRow("Tracks", a.rawTracks.length, b.rawTracks.length)}
+      ${statRow("Tracks", (a.pl.tracks?.total??a.rawTracks.length).toLocaleString(), (b.pl.tracks?.total??b.rawTracks.length).toLocaleString())}
       ${statRow("Artists", a.artistCount, b.artistCount)}
-      ${statRow("Total Time", msToTime(a.totalMs), msToTime(b.totalMs))}
+      ${statRow("Total Time", msToTime(a.pl.tracks?.total>a.rawTracks.length?(a.totalMs/a.rawTracks.length)*a.pl.tracks.total:a.totalMs), msToTime(b.pl.tracks?.total>b.rawTracks.length?(b.totalMs/b.rawTracks.length)*b.pl.tracks.total:b.totalMs))}
       ${statRow("Avg Popularity", a.avgPop+"/100", b.avgPop+"/100")}
       ${a.af&&b.af?statRow("Avg BPM", a.af.avgTempo, b.af.avgTempo):""}
     </div>
