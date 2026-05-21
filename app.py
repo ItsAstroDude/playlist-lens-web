@@ -80,9 +80,19 @@ def _refresh() -> bool:
     return False
 
 def _spotify_get(url: str) -> requests.Response:
-    hdrs = {"Authorization": f"Bearer {_tokens.get('access_token', '')}"}
+    # Mobile clients send their own Bearer token in the Authorization header.
+    # Use it if present; fall back to the server-side stored token (web flow).
+    incoming = request.headers.get("Authorization", "")
+    if incoming.startswith("Bearer "):
+        token = incoming[len("Bearer "):]
+    else:
+        token = _tokens.get("access_token", "")
+
+    hdrs = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=hdrs, timeout=15)
-    if r.status_code == 401 and _refresh():
+
+    # Only attempt a refresh when using the server-stored token (web flow).
+    if r.status_code == 401 and not incoming.startswith("Bearer ") and _refresh():
         hdrs["Authorization"] = f"Bearer {_tokens['access_token']}"
         r = requests.get(url, headers=hdrs, timeout=15)
     return r
