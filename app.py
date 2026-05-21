@@ -104,6 +104,22 @@ def _spotify_get(url: str) -> requests.Response:
     if r.status_code == 401 and not incoming.startswith("Bearer ") and _refresh():
         hdrs["Authorization"] = f"Bearer {_tokens['access_token']}"
         r = requests.get(url, headers=hdrs, timeout=15)
+
+    # Spotify returns 400 "Only valid bearer authentication supported" for
+    # malformed/invalid tokens — normalise to 401 so mobile auto-logout fires.
+    if r.status_code == 400:
+        try:
+            body = r.json()
+            msg  = body.get("error", {}).get("message", "")
+            if "bearer" in msg.lower():
+                from flask import make_response
+                return make_response(
+                    {"error": {"status": 401, "message": "Invalid token. Please log in again."}},
+                    401,
+                )
+        except Exception:
+            pass
+
     return r
 
 def _gen_code() -> str:
