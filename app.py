@@ -61,6 +61,16 @@ def _save_profiles():
 _profiles = _load_profiles()
 
 # ── helpers ───────────────────────────────────────────────────
+
+class _FakeResponse:
+    """Mimics requests.Response so _spotify_get() callers always get .json()/.status_code."""
+    def __init__(self, body: dict, status_code: int):
+        self._body      = body
+        self.status_code = status_code
+        self.ok         = status_code < 400
+    def json(self):
+        return self._body
+
 def _basic_header() -> str:
     return "Basic " + base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
 
@@ -91,8 +101,7 @@ def _spotify_get(url: str) -> requests.Response:
     # Bail early rather than forwarding an empty token to Spotify —
     # that produces a confusing 400 instead of a clean 401.
     if not token or not token.strip():
-        from flask import make_response
-        return make_response(
+        return _FakeResponse(
             {'error': {'status': 401, 'message': 'No authentication token. Please log in again.'}},
             401,
         )
@@ -112,8 +121,7 @@ def _spotify_get(url: str) -> requests.Response:
             body = r.json()
             msg  = body.get("error", {}).get("message", "")
             if "bearer" in msg.lower():
-                from flask import make_response
-                return make_response(
+                return _FakeResponse(
                     {"error": {"status": 401, "message": "Invalid token. Please log in again."}},
                     401,
                 )
