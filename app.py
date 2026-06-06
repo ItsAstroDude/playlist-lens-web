@@ -25,8 +25,9 @@ SECRET_KEY    = os.environ.get("SECRET_KEY",             secrets.token_hex(32))
 PORT          = int(os.environ.get("PORT",               8888))
 IS_PRODUCTION = "RENDER" in os.environ
 
-# Deep link scheme for the mobile app
-MOBILE_SCHEME = "playlistlens://auth/callback"
+# Deep link scheme for the mobile app — fallback only; the app always sends an
+# explicit redirect_url (Linking.createURL('/callback')) on /login.
+MOBILE_SCHEME = "playlistlens://callback"
 
 SCOPES = (
     "user-read-private "
