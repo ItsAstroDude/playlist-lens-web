@@ -40,7 +40,23 @@ SCOPES = (
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
-_tokens:   dict = {}
+# Per-user tokens live EITHER in the signed Flask session cookie (web flow) or are
+# sent by the client as a Bearer header (mobile). There is deliberately NO server
+# global token store — a shared global previously served the last-logged-in
+# account to every visitor who didn't present their own token.
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=IS_PRODUCTION,  # HTTPS-only cookie in production
+)
+
+# A STABLE SECRET_KEY is required in production now that the session cookie holds
+# tokens: the per-boot random fallback (above) would silently invalidate every
+# web session on each restart and across workers/instances.
+if IS_PRODUCTION and not os.environ.get("SECRET_KEY"):
+    print("WARNING: SECRET_KEY env var is not set — web sessions will not persist "
+          "across restarts or workers. Set a fixed SECRET_KEY on Render.")
+
 _profiles: dict = {}
 
 PROFILES_FILE = Path("profiles.json")
@@ -76,7 +92,8 @@ def _basic_header() -> str:
     return "Basic " + base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
 
 def _refresh() -> bool:
-    rt = _tokens.get("refresh_token")
+    """Refresh the WEB session's access token from its own stored refresh token."""
+    rt = session.get("refresh_token")
     if not rt:
         return False
     r = requests.post(
@@ -86,33 +103,35 @@ def _refresh() -> bool:
         timeout=10,
     )
     if r.ok:
-        _tokens["access_token"] = r.json()["access_token"]
+        session["access_token"] = r.json()["access_token"]
         return True
     return False
 
 def _spotify_get(url: str) -> requests.Response:
-    # Mobile clients send their own Bearer token in the Authorization header.
-    # Use it if present; fall back to the server-side stored token (web flow).
-    incoming = request.headers.get("Authorization", "")
-    if incoming.startswith("Bearer "):
-        token = incoming[len("Bearer "):]
+    # Two ISOLATED token sources, never a shared global:
+    #   • Mobile sends its own Bearer token in the Authorization header.
+    #   • Web uses the per-browser token in this request's signed session cookie.
+    incoming  = request.headers.get("Authorization", "")
+    is_bearer = incoming.startswith("Bearer ")
+    if is_bearer:
+        token = incoming[len("Bearer "):].strip()
     else:
-        token = _tokens.get("access_token", "")
+        token = (session.get("access_token") or "").strip()
 
     # Bail early rather than forwarding an empty token to Spotify —
     # that produces a confusing 400 instead of a clean 401.
-    if not token or not token.strip():
+    if not token:
         return _FakeResponse(
             {'error': {'status': 401, 'message': 'No authentication token. Please log in again.'}},
             401,
         )
 
-    hdrs = {"Authorization": f"Bearer {token.strip()}"}
+    hdrs = {"Authorization": f"Bearer {token}"}
     r = requests.get(url, headers=hdrs, timeout=15)
 
-    # Only attempt a refresh when using the server-stored token (web flow).
-    if r.status_code == 401 and not incoming.startswith("Bearer ") and _refresh():
-        hdrs["Authorization"] = f"Bearer {_tokens['access_token']}"
+    # Only the web (session) flow can refresh here — mobile refreshes on its side.
+    if r.status_code == 401 and not is_bearer and _refresh():
+        hdrs["Authorization"] = f"Bearer {session['access_token']}"
         r = requests.get(url, headers=hdrs, timeout=15)
 
     # Spotify returns 400 "Only valid bearer authentication supported" for
@@ -182,11 +201,10 @@ def callback():
         return f"<h3>Token exchange failed: {r.text}</h3>", 400
 
     data = r.json()
-    _tokens["access_token"]  = data["access_token"]
-    _tokens["refresh_token"] = data.get("refresh_token", "")
 
     if is_mobile:
-        # Use the deep-link URL the mobile app registered at login time
+        # Mobile stores its own tokens (SecureStore) and verifies the CSRF state
+        # itself — the server persists nothing for the mobile flow.
         mobile_redirect = session.get("mobile_redirect", MOBILE_SCHEME)
         params = urlencode({
             "access_token":  data["access_token"],
@@ -195,16 +213,20 @@ def callback():
         })
         return redirect(f"{mobile_redirect}?{params}")
 
+    # Web flow: tokens live ONLY in this browser's signed session cookie.
+    session["access_token"]  = data["access_token"]
+    session["refresh_token"] = data.get("refresh_token", "")
     return redirect("/")
 
 @app.get("/logout")
 def logout():
-    _tokens.clear()
+    session.pop("access_token", None)
+    session.pop("refresh_token", None)
     return redirect("/")
 
 @app.get("/api/auth-status")
 def auth_status():
-    return jsonify({"authenticated": bool(_tokens.get("access_token"))})
+    return jsonify({"authenticated": bool(session.get("access_token"))})
 
 # ── spotify proxy ─────────────────────────────────────────────
 @app.get("/api/me")
