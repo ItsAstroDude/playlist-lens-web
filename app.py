@@ -248,6 +248,30 @@ def logout():
 def auth_status():
     return jsonify({"authenticated": bool(session.get("access_token"))})
 
+@app.post("/api/refresh")
+def api_refresh():
+    """Mobile token refresh — the app holds its refresh token in SecureStore and
+    exchanges it here (the client secret must stay server-side). Without this,
+    every Spotify token expiry (1h) force-logged the mobile user out."""
+    body = request.get_json(silent=True) or {}
+    rt = (body.get("refresh_token") or "").strip()
+    if not rt:
+        return jsonify({"error": "refresh_token required"}), 400
+    r = requests.post(
+        "https://accounts.spotify.com/api/token",
+        headers={"Authorization": _basic_header()},
+        data={"grant_type": "refresh_token", "refresh_token": rt},
+        timeout=10,
+    )
+    if not r.ok:
+        return jsonify(_json_or_error(r)), r.status_code
+    data = r.json()
+    return jsonify({
+        "access_token":  data["access_token"],
+        # Spotify may rotate the refresh token; null = keep using the old one.
+        "refresh_token": data.get("refresh_token"),
+    })
+
 # ── spotify proxy ─────────────────────────────────────────────
 @app.get("/api/me")
 def me():
