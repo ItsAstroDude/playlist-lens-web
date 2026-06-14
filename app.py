@@ -33,9 +33,9 @@ IS_PRODUCTION = "RENDER" in os.environ
 MOBILE_SCHEME = "playlistlens://callback"
 
 # v1.3 batched re-auth: now-playing (user-read-currently-playing) + swipe writes
-# (playlist-modify-*) granted in ONE login so users never face a second consent.
-# Pre-v1.3 tokens lack the new scopes → those endpoints return 403 and the app
-# shows its inline "reconnect Spotify" prompt.
+# (playlist-modify-*). v1.4 adds auto-Wrapped reads: recently-played + top. Tokens
+# issued before a given version lack its newer scopes → those endpoints return 403
+# and the app shows its inline "reconnect Spotify" prompt.
 SCOPES = (
     "user-read-private "
     "playlist-read-private "
@@ -43,7 +43,9 @@ SCOPES = (
     "user-library-read "
     "user-read-currently-playing "
     "playlist-modify-public "
-    "playlist-modify-private"
+    "playlist-modify-private "
+    "user-read-recently-played "   # v1.4 auto-Wrapped: recent play history
+    "user-top-read"                # v1.4 auto-Wrapped: top artists/tracks (fallback)
 )
 
 # ── app ───────────────────────────────────────────────────────
@@ -352,6 +354,96 @@ def now_playing():
             "album":       {"name": album.get("name"), "images": album.get("images", [])},
         } if item else None,
     })
+
+# ── auto-Wrapped reads (v1.4) ────────────────────────────────
+# Keep Wrapped fresh between manual GDPR re-imports. Both require their v1.4 scope —
+# pre-v1.4 tokens get Spotify's 403 passed through → the app's reconnect prompt.
+
+def _clamp_limit(raw, default=50, hi=50):
+    try:
+        return max(1, min(hi, int(raw)))
+    except (TypeError, ValueError):
+        return default
+
+@app.get("/api/recently-played")
+def recently_played():
+    """Recent play history (rolling ~50-play buffer). Requires user-read-recently-played.
+    Paginate with ?after=<ms-epoch> (newer than) or ?before=<ms-epoch> (older than) —
+    the app passes its high-water-mark as `after` to fetch only genuinely new plays."""
+    qs = f"limit={_clamp_limit(request.args.get('limit'))}"
+    # after/before are millisecond-epoch cursors — accept digits only.
+    after  = (request.args.get("after")  or "").strip()
+    before = (request.args.get("before") or "").strip()
+    if after.isdigit():
+        qs += f"&after={after}"
+    elif before.isdigit():
+        qs += f"&before={before}"
+
+    r = _spotify_get(f"https://api.spotify.com/v1/me/player/recently-played?{qs}")
+    if not r.ok:
+        return jsonify(_json_or_error(r)), r.status_code
+    data = _json_or_error(r)
+
+    items = []
+    for it in data.get("items", []):
+        track = it.get("track") or {}
+        album = track.get("album") or {}
+        items.append({
+            "played_at": it.get("played_at"),     # ISO ts → Wrapped's row `ts`
+            "track": {
+                "id":          track.get("id"),
+                "uri":         track.get("uri"),
+                "name":        track.get("name"),
+                "duration_ms": track.get("duration_ms"),   # used as ms_played (no real listen-duration in this API)
+                "artists":     [a.get("name") for a in track.get("artists", [])],
+                "album":       {"name": album.get("name"), "images": album.get("images", [])},
+                "isrc":        (track.get("external_ids") or {}).get("isrc"),
+            },
+        })
+    return jsonify({"items": items, "cursors": data.get("cursors")})
+
+@app.get("/api/top")
+def top_items():
+    """Top artists or tracks (ranked, NO timestamps). Requires user-top-read. Used as a
+    fallback top-lists source when there's no GDPR import. type=artists|tracks;
+    time_range=short_term(~4wk)|medium_term(~6mo)|long_term(~1yr)."""
+    kind = request.args.get("type", "artists")
+    if kind not in ("artists", "tracks"):
+        return jsonify({"error": "type must be 'artists' or 'tracks'."}), 400
+    time_range = request.args.get("time_range", "medium_term")
+    if time_range not in ("short_term", "medium_term", "long_term"):
+        return jsonify({"error": "time_range must be short_term, medium_term, or long_term."}), 400
+    limit = _clamp_limit(request.args.get("limit"))
+
+    r = _spotify_get(f"https://api.spotify.com/v1/me/top/{kind}?time_range={time_range}&limit={limit}")
+    if not r.ok:
+        return jsonify(_json_or_error(r)), r.status_code
+    data = _json_or_error(r)
+
+    out = []
+    for it in data.get("items", []):
+        if kind == "artists":
+            out.append({
+                "id":         it.get("id"),
+                "uri":        it.get("uri"),
+                "name":       it.get("name"),
+                "genres":     it.get("genres", []),
+                "images":     it.get("images", []),
+                "popularity": it.get("popularity"),
+            })
+        else:  # tracks
+            album = it.get("album") or {}
+            out.append({
+                "id":          it.get("id"),
+                "uri":         it.get("uri"),
+                "name":        it.get("name"),
+                "duration_ms": it.get("duration_ms"),
+                "artists":     [a.get("name") for a in it.get("artists", [])],
+                "album":       {"name": album.get("name"), "images": album.get("images", [])},
+                "popularity":  it.get("popularity"),
+                "isrc":        (it.get("external_ids") or {}).get("isrc"),
+            })
+    return jsonify({"type": kind, "time_range": time_range, "items": out})
 
 # ── 30s preview resolver (swipe-refresh) ─────────────────────
 # Spotify killed preview_url for apps registered after 2024-11-27, so snippets
