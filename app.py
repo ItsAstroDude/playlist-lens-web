@@ -15,7 +15,7 @@ import time
 import webbrowser
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import requests
 from flask import Flask, jsonify, redirect, request, session
@@ -444,6 +444,39 @@ def top_items():
                 "isrc":        (it.get("external_ids") or {}).get("isrc"),
             })
     return jsonify({"type": kind, "time_range": time_range, "items": out})
+
+# ── artist portraits (v1.3.1 "Faces & Facets") ───────────────
+# iTunes only has song covers; Spotify has real artist photos. Resolved here so
+# Wrapped/Taste/Lenses can show actual faces. Search needs NO special scope, so
+# existing users get this WITHOUT reconnecting.
+_artist_img_cache: dict = {}
+_ARTIST_IMG_TTL       = 7 * 24 * 3600   # portraits rarely change
+_ARTIST_IMG_CACHE_MAX = 4000
+
+@app.get("/api/artist-image")
+def artist_image():
+    name = (request.args.get("name") or "").strip()
+    if not name:
+        return jsonify({"image": None}), 200
+    key = name.lower()
+    now = time.time()
+    hit = _artist_img_cache.get(key)
+    if hit and hit[0] > now:
+        return jsonify({"image": hit[1]})
+
+    r = _spotify_get(f"https://api.spotify.com/v1/search?type=artist&limit=5&q={quote(name)}")
+    if not r.ok:
+        return jsonify(_json_or_error(r)), r.status_code
+    items = ((r.json().get("artists") or {}).get("items")) or []
+    # Prefer an exact (case-insensitive) name match, else the top result.
+    best  = next((a for a in items if (a.get("name") or "").lower() == key), items[0] if items else None)
+    imgs  = (best or {}).get("images") or []
+    image = imgs[0].get("url") if imgs else None   # Spotify returns largest first
+
+    if len(_artist_img_cache) >= _ARTIST_IMG_CACHE_MAX:
+        _artist_img_cache.clear()
+    _artist_img_cache[key] = (now + _ARTIST_IMG_TTL, image)
+    return jsonify({"image": image})
 
 # ── 30s preview resolver (swipe-refresh) ─────────────────────
 # Spotify killed preview_url for apps registered after 2024-11-27, so snippets
