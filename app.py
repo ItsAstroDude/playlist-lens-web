@@ -33,9 +33,10 @@ IS_PRODUCTION = "RENDER" in os.environ
 MOBILE_SCHEME = "playlistlens://callback"
 
 # v1.3 batched re-auth: now-playing (user-read-currently-playing) + swipe writes
-# (playlist-modify-*). v1.4 adds auto-Wrapped reads: recently-played + top. Tokens
-# issued before a given version lack its newer scopes → those endpoints return 403
-# and the app shows its inline "reconnect Spotify" prompt.
+# (playlist-modify-*). v1.4 adds auto-Wrapped reads: recently-played + top. v1.5 adds
+# playback control: read/modify playback-state (Custom Queues). Tokens issued before a
+# given version lack its newer scopes → those endpoints return 403 and the app shows
+# its inline "reconnect Spotify" prompt.
 SCOPES = (
     "user-read-private "
     "playlist-read-private "
@@ -45,7 +46,9 @@ SCOPES = (
     "playlist-modify-public "
     "playlist-modify-private "
     "user-read-recently-played "   # v1.4 auto-Wrapped: recent play history
-    "user-top-read"                # v1.4 auto-Wrapped: top artists/tracks (fallback)
+    "user-top-read "               # v1.4 auto-Wrapped: top artists/tracks (fallback)
+    "user-read-playback-state "    # v1.5 Custom Queues: list/detect Connect devices
+    "user-modify-playback-state"   # v1.5 Custom Queues: start/append the queue
 )
 
 # ── app ───────────────────────────────────────────────────────
@@ -354,6 +357,82 @@ def now_playing():
             "album":       {"name": album.get("name"), "images": album.get("images", [])},
         } if item else None,
     })
+
+# ── playback control (v1.5 "Custom Queues") ──────────────────
+# Start a hand-picked / smart-suggested queue on the user's Spotify. Requires
+# user-read-playback-state (list/detect devices) + user-modify-playback-state (control)
+# — pre-v1.5 tokens get Spotify's 403 passed through → the app's reconnect prompt.
+# ALL of these need Spotify PREMIUM: free accounts get 403 (PREMIUM_REQUIRED), which
+# the app surfaces as a graceful "Premium required" state. playlist.lens is a REMOTE —
+# it can only drive an already-running Connect device, never play audio itself.
+
+_DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9]+$")
+
+def _safe_device_id(raw) -> str:
+    """Spotify device ids are alphanumeric — reject anything else so a crafted value
+    can't smuggle extra query params into the upstream URL."""
+    raw = (raw or "").strip()
+    return raw if _DEVICE_ID_RE.match(raw) else ""
+
+@app.get("/api/playback/devices")
+def playback_devices():
+    """Available Spotify Connect devices for the 3-state queue onboarding.
+    Requires user-read-playback-state."""
+    r = _spotify_get("https://api.spotify.com/v1/me/player/devices")
+    if not r.ok:
+        return jsonify(_json_or_error(r)), r.status_code
+    data = _json_or_error(r)
+    devices = [{
+        "id":             d.get("id"),
+        "name":           d.get("name"),
+        "type":           d.get("type"),
+        "is_active":      d.get("is_active", False),
+        "is_restricted":  d.get("is_restricted", False),
+        "volume_percent": d.get("volume_percent"),
+    } for d in data.get("devices", [])]
+    return jsonify({"devices": devices})
+
+@app.put("/api/playback/play")
+def playback_play():
+    """Start an ordered queue immediately. Body: {uris:[...], device_id?}. Plays the
+    first ≤100 URIs in exact order; pass device_id to transfer-and-start onto an idle
+    device (the 'present but not active' onboarding state). Append anything beyond the
+    first batch via /api/playback/queue. Requires user-modify-playback-state + Premium."""
+    body = request.get_json(silent=True) or {}
+    uris, skipped_local = _addable_uris(body.get("uris") or [])
+    if not uris:
+        return jsonify({"error": "No playable track URIs."}), 400
+
+    url = "https://api.spotify.com/v1/me/player/play"
+    device_id = _safe_device_id(body.get("device_id"))
+    if device_id:
+        url += f"?device_id={device_id}"
+
+    # /play accepts up to 100 URIs in one body; the client appends the rest.
+    r = _spotify_request("PUT", url, {"uris": uris[:100]})
+    if r.status_code not in (200, 202, 204):
+        return jsonify(_json_or_error(r)), r.status_code
+    return jsonify({"started": min(len(uris), 100), "skipped_local": skipped_local})
+
+@app.post("/api/playback/queue")
+def playback_queue():
+    """Append ONE track to the end of the queue (for tracks beyond the first 100 the
+    /play body holds). Body: {uri, device_id?}. Requires user-modify-playback-state +
+    Premium + active playback. Whitelists spotify:track: like every other write."""
+    body = request.get_json(silent=True) or {}
+    uri = (body.get("uri") or "").strip()
+    if not uri.startswith("spotify:track:"):
+        return jsonify({"error": "uri must be a spotify:track: URI."}), 400
+
+    url = f"https://api.spotify.com/v1/me/player/queue?uri={quote(uri)}"
+    device_id = _safe_device_id(body.get("device_id"))
+    if device_id:
+        url += f"&device_id={device_id}"
+
+    r = _spotify_request("POST", url, None)
+    if r.status_code not in (200, 202, 204):
+        return jsonify(_json_or_error(r)), r.status_code
+    return jsonify({"queued": uri})
 
 # ── auto-Wrapped reads (v1.4) ────────────────────────────────
 # Keep Wrapped fresh between manual GDPR re-imports. Both require their v1.4 scope —
