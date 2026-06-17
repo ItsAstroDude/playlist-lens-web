@@ -434,6 +434,37 @@ def playback_queue():
         return jsonify(_json_or_error(r)), r.status_code
     return jsonify({"queued": uri})
 
+# Transport controls (v1.6) — turn the now-playing bar into a real remote. Body:
+# {device_id?}. Same gates as the rest: user-modify-playback-state + Premium + an
+# active device (404 NO_ACTIVE_DEVICE passed through). `action` is a fixed literal
+# from each route (never user input), so it can't smuggle anything into the URL.
+def _player_transport(method: str, action: str):
+    body = request.get_json(silent=True) or {}
+    url = f"https://api.spotify.com/v1/me/player/{action}"
+    device_id = _safe_device_id(body.get("device_id"))
+    if device_id:
+        url += f"?device_id={device_id}"
+    r = _spotify_request(method, url, None)
+    if r.status_code not in (200, 202, 204):
+        return jsonify(_json_or_error(r)), r.status_code
+    return jsonify({"ok": True})
+
+@app.put("/api/playback/pause")
+def playback_pause():
+    return _player_transport("PUT", "pause")
+
+@app.put("/api/playback/resume")
+def playback_resume():
+    return _player_transport("PUT", "play")   # PUT /play with no body resumes the current track
+
+@app.post("/api/playback/next")
+def playback_next():
+    return _player_transport("POST", "next")
+
+@app.post("/api/playback/previous")
+def playback_previous():
+    return _player_transport("POST", "previous")
+
 # ── auto-Wrapped reads (v1.4) ────────────────────────────────
 # Keep Wrapped fresh between manual GDPR re-imports. Both require their v1.4 scope —
 # pre-v1.4 tokens get Spotify's 403 passed through → the app's reconnect prompt.
