@@ -1,0 +1,30 @@
+# Hourly listening tracker — saves every enrolled user's newest plays before they
+# roll off Spotify's 50-play recently-played window. Render's free tier sleeps, so
+# the poll is triggered from here (the request also wakes the server up).
+#
+# Repo secrets needed: TRACKER_URL (e.g. https://playlist-lens-mobile.onrender.com)
+#                      CRON_SECRET (same value as the server's CRON_SECRET env var)
+name: track-listening
+on:
+  schedule:
+    - cron: "17 * * * *"     # hourly, off the :00 rush
+  workflow_dispatch: {}
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Poll tracker
+        env:
+          TRACKER_URL: ${{ secrets.TRACKER_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$TRACKER_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "TRACKER_URL / CRON_SECRET secrets not set — skipping."; exit 0
+          fi
+          # Free-tier cold start can take ~60s; retry once.
+          for i in 1 2; do
+            if curl -fsS --max-time 150 -X POST -H "X-Cron-Secret: $CRON_SECRET" "$TRACKER_URL/api/tracking/poll"; then exit 0; fi
+            sleep 20
+          done
+          exit 1

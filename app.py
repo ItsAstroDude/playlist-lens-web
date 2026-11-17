@@ -842,6 +842,10 @@ def load_profile(code: str):
         return jsonify({"error": "Profile not found. Check the code and try again."}), 404
     return jsonify(profile)
 
+# ── server-side listening tracker (v1.8) — see tracking.py ────
+from tracking import bp as tracking_bp  # noqa: E402
+app.register_blueprint(tracking_bp)
+
 # ── web frontend ──────────────────────────────────────────────
 @app.get("/")
 def index():
