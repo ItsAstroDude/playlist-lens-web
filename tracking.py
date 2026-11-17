@@ -16,8 +16,8 @@ because Render's free tier sleeps — an in-process timer would sleep with it. 5
 plays ≈ 2.5h of non-stop listening, so hourly never drops plays.
 
 Configuration (all env vars; tracking is DISABLED unless the first two are set):
-  TRACKING_KEY   Fernet key encrypting stored refresh tokens
-                 (python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+  TRACKING_KEY   secret encrypting stored refresh tokens — a Fernet key, or any long
+                 random string (Render's "Generate" button is fine)
   CRON_SECRET    shared secret the scheduler sends as X-Cron-Secret
   DATABASE_URL   postgres://… (e.g. Neon / Supabase free tier). Falls back to a
                  local SQLite file for development — NOT durable on Render.
@@ -53,8 +53,15 @@ def enabled() -> bool:
     return bool(_env("TRACKING_KEY") and _env("CRON_SECRET"))
 
 def _fernet():
+    """TRACKING_KEY may be a real Fernet key OR any random secret (e.g. one Render
+    generated) — a non-Fernet value is stretched into a key with SHA-256. Both are
+    deterministic, so the same env value always decrypts what it encrypted."""
     from cryptography.fernet import Fernet
-    return Fernet(_env("TRACKING_KEY").encode())
+    raw = _env("TRACKING_KEY")
+    try:
+        return Fernet(raw.encode())
+    except ValueError:
+        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest()))
 
 def _encrypt(s: str) -> str:
     return _fernet().encrypt(s.encode()).decode()

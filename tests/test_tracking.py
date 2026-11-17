@@ -132,3 +132,10 @@ def test_disabled_without_config(spotify, client, monkeypatch):
     monkeypatch.delenv("TRACKING_KEY")
     assert client.post("/api/tracking/enroll", json={"refresh_token": "x"}).status_code == 503
     assert client.get("/api/tracking/status", headers=AUTH).json == {"available": False, "enrolled": False}
+
+
+def test_any_random_string_works_as_tracking_key(spotify, client, monkeypatch):
+    monkeypatch.setenv("TRACKING_KEY", "render-generated+value/with=odd chars 123")
+    enc = tracking._encrypt("rt1")
+    assert tracking._decrypt(enc) == "rt1"
+    assert client.post("/api/tracking/enroll", json={"refresh_token": "rt1"}).status_code == 200
