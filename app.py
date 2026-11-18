@@ -32,6 +32,18 @@ IS_PRODUCTION = "RENDER" in os.environ
 # explicit redirect_url (Linking.createURL('/callback')) on /login.
 MOBILE_SCHEME = "playlistlens://callback"
 
+# The mobile login hands Spotify tokens to `redirect_url`, so only the family's own app
+# schemes may receive them (playlist.lens, Soundwave, and Expo dev builds). Anything
+# else (an https:// site, say) falls back to playlist.lens, so a crafted login link
+# can't deliver someone's tokens to a stranger.
+_APP_SCHEMES = {"playlistlens", "soundwave", "exp"}
+
+def _safe_mobile_redirect(url: str) -> str:
+    scheme = (url or "").split(":", 1)[0].lower()
+    if "://" in (url or "") and (scheme in _APP_SCHEMES or scheme.startswith("exp+")):
+        return url
+    return MOBILE_SCHEME
+
 # v1.3 batched re-auth: now-playing (user-read-currently-playing) + swipe writes
 # (playlist-modify-*). v1.4 adds auto-Wrapped reads: recently-played + top. v1.5 adds
 # playback control: read/modify playback-state (Custom Queues). Tokens issued before a
@@ -191,7 +203,7 @@ def login():
     state        = request.args.get("state", secrets.token_hex(8))
     # Mobile app passes its own deep-link URL so dev builds, Expo Go, and
     # production all get redirected to the right scheme after OAuth.
-    redirect_url = request.args.get("redirect_url", MOBILE_SCHEME)
+    redirect_url = _safe_mobile_redirect(request.args.get("redirect_url", MOBILE_SCHEME))
 
     session["oauth_state"]     = state
     session["is_mobile"]       = is_mobile
