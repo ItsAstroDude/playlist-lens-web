@@ -846,6 +846,10 @@ def load_profile(code: str):
 from tracking import bp as tracking_bp  # noqa: E402
 app.register_blueprint(tracking_bp)
 
+# ── app error reports (2.0) — see errors.py ────
+from errors import bp as errors_bp  # noqa: E402
+app.register_blueprint(errors_bp)
+
 # ── web frontend ──────────────────────────────────────────────
 @app.get("/")
 def index():
