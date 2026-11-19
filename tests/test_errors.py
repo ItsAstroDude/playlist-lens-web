@@ -38,3 +38,8 @@ def test_clips_and_caps(spotify, client, monkeypatch):
 
 def test_rejects_bad_body(spotify, client):
     assert client.post("/api/errors", headers=AUTH, json={"errors": "nope"}).status_code == 400
+
+
+def test_health_needs_no_auth(client):
+    r = client.get("/api/health")
+    assert r.status_code == 200 and r.json == {"ok": True}

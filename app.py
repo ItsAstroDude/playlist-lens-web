@@ -261,6 +261,12 @@ def logout():
     session.pop("refresh_token", None)
     return redirect("/")
 
+@app.get("/api/health")
+def health():
+    """Cheap liveness ping (no Spotify call). The mobile app hits it on launch so a
+    sleeping free-tier server starts booting before the user taps anything."""
+    return jsonify({"ok": True})
+
 @app.get("/api/auth-status")
 def auth_status():
     return jsonify({"authenticated": bool(session.get("access_token"))})
