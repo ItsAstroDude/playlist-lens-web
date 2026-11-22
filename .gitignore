@@ -7,3 +7,6 @@ __pycache__/
 tracking.db
 __pycache__/
 .pytest_cache/
+
+# share-code store written at runtime
+profiles.json

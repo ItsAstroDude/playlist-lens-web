@@ -37,6 +37,8 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from security import rate_limit
+
 bp = Blueprint("tracking", __name__)
 
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -253,6 +255,7 @@ def _disabled():
     return jsonify({"error": "Listening tracking isn't switched on for this server yet."}), 503
 
 @bp.post("/api/tracking/enroll")
+@rate_limit("enroll", 10, 60)
 def enroll():
     if not enabled():
         return _disabled()
