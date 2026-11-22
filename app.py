@@ -5,9 +5,9 @@ Mobile flow: redirects back to the app via deep link with tokens as query params
 """
 
 import base64
+import html
 import json
 import os
-import random
 import re
 import secrets
 import string
@@ -15,10 +15,14 @@ import time
 import webbrowser
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, urlsplit
 
 import requests
 from flask import Flask, jsonify, redirect, request, session
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+import security
+from security import rate_limit
 
 # ── config ────────────────────────────────────────────────────
 CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID",     "YOUR_CLIENT_ID")
@@ -36,12 +40,27 @@ MOBILE_SCHEME = "playlistlens://callback"
 # schemes may receive them (playlist.lens, Soundwave, and Expo dev builds). Anything
 # else (an https:// site, say) falls back to playlist.lens, so a crafted login link
 # can't deliver someone's tokens to a stranger.
-_APP_SCHEMES = {"playlistlens", "soundwave", "exp"}
+#
+# Plain exp:// is Expo Go, which LOADS whatever server the URL names: a link with
+# redirect_url=exp://attacker.example/... would make Expo Go send the tokens to that
+# host. So exp:// only counts when it points at localhost or a LAN address, which is
+# where a real dev server runs.
+_APP_SCHEMES = {"playlistlens", "soundwave"}
 
 def _safe_mobile_redirect(url: str) -> str:
-    scheme = (url or "").split(":", 1)[0].lower()
-    if "://" in (url or "") and (scheme in _APP_SCHEMES or scheme.startswith("exp+")):
+    url = url or ""
+    scheme = url.split(":", 1)[0].lower()
+    if "://" not in url:
+        return MOBILE_SCHEME
+    if scheme in _APP_SCHEMES or scheme.startswith("exp+"):
         return url
+    if scheme == "exp":
+        try:
+            host = urlsplit(url).hostname or ""
+        except ValueError:
+            return MOBILE_SCHEME
+        if security.is_private_host(host):
+            return url
     return MOBILE_SCHEME
 
 # v1.3 batched re-auth: now-playing (user-read-currently-playing) + swipe writes
@@ -67,6 +86,19 @@ SCOPES = (
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
+# Render sits in front of us as one proxy: trust exactly one X-Forwarded-For hop so
+# request.remote_addr is the real client (rate limits) and URLs say https.
+if IS_PRODUCTION:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
+# Biggest legit body is an error-report batch (50 × ~10 KB). Anything larger is refused
+# before it's read, so nobody can push huge JSON at the server.
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
+
+@app.after_request
+def _security_headers(resp):
+    return security.apply_security_headers(resp, IS_PRODUCTION)
+
 # Per-user tokens live EITHER in the signed Flask session cookie (web flow) or are
 # sent by the client as a Bearer header (mobile). There is deliberately NO server
 # global token store — a shared global previously served the last-logged-in
@@ -85,6 +117,7 @@ if IS_PRODUCTION and not os.environ.get("SECRET_KEY"):
           "across restarts or workers. Set a fixed SECRET_KEY on Render.")
 
 _profiles: dict = {}
+MAX_PROFILES = 20_000   # oldest share codes are dropped past this
 
 PROFILES_FILE = Path("profiles.json")
 
@@ -188,9 +221,11 @@ def _json_or_error(r) -> dict:
         return {"error": {"status": r.status_code, "message": "Unexpected response from Spotify."}}
 
 def _gen_code() -> str:
+    # `secrets`, not `random`: share codes are the only thing guarding a profile, so
+    # they must not be predictable from earlier ones.
     chars = string.ascii_uppercase + string.digits
     for _ in range(100):
-        raw = "".join(random.choices(chars, k=6))
+        raw = "".join(secrets.choice(chars) for _ in range(6))
         code = f"{raw[:3]}-{raw[3:]}"
         if code not in _profiles:
             return code
@@ -198,9 +233,10 @@ def _gen_code() -> str:
 
 # ── auth ──────────────────────────────────────────────────────
 @app.get("/login")
+@rate_limit("login", 30, 60)
 def login():
     is_mobile    = request.args.get("mobile") == "true"
-    state        = request.args.get("state", secrets.token_hex(8))
+    state        = (request.args.get("state") or "")[:128] or secrets.token_hex(16)
     # Mobile app passes its own deep-link URL so dev builds, Expo Go, and
     # production all get redirected to the right scheme after OAuth.
     redirect_url = _safe_mobile_redirect(request.args.get("redirect_url", MOBILE_SCHEME))
@@ -222,11 +258,19 @@ def login():
 def callback():
     error = request.args.get("error")
     if error:
-        return f"<h3>Auth error: {error}</h3>", 400
+        # Escaped: `error` comes straight from the URL, so it must never become HTML.
+        return f"<h3>Auth error: {html.escape(error[:200])}</h3>", 400
 
     code          = request.args.get("code", "")
     returned_state = request.args.get("state", "")
     is_mobile     = session.get("is_mobile", False)
+
+    # CSRF: the state must be the one THIS browser started /login with. Without this
+    # check, someone could send you a /callback link carrying THEIR login code and
+    # sign you into their Spotify account.
+    expected_state = session.pop("oauth_state", None)
+    if not expected_state or not secrets.compare_digest(returned_state, expected_state):
+        return "<h3>Sign-in expired or was started somewhere else. Please try again.</h3>", 400
 
     r = requests.post(
         "https://accounts.spotify.com/api/token",
@@ -235,7 +279,8 @@ def callback():
         timeout=10,
     )
     if not r.ok:
-        return f"<h3>Token exchange failed: {r.text}</h3>", 400
+        print(f"Token exchange failed: {r.status_code} {r.text[:300]}")
+        return "<h3>Spotify sign-in failed. Please try again.</h3>", 400
 
     data = r.json()
 
@@ -272,6 +317,7 @@ def auth_status():
     return jsonify({"authenticated": bool(session.get("access_token"))})
 
 @app.post("/api/refresh")
+@rate_limit("refresh", 30, 60)
 def api_refresh():
     """Mobile token refresh — the app holds its refresh token in SecureStore and
     exchanges it here (the client secret must stay server-side). Without this,
@@ -310,6 +356,8 @@ def playlists():
 def playlist_tracks(pl_id: str):
     if pl_id == "liked_songs":
         return _liked_tracks()
+    if not security.is_spotify_id(pl_id):
+        return _bad_id()
     items, url = [], f"https://api.spotify.com/v1/playlists/{pl_id}/tracks?limit=100"
     while url and len(items) < 500:
         r = _spotify_get(url)
@@ -319,6 +367,9 @@ def playlist_tracks(pl_id: str):
         items.extend(i for i in data.get("items", []) if i.get("track") and i["track"].get("id"))
         url = data.get("next")
     return jsonify({"items": items})
+
+def _bad_id():
+    return jsonify({"error": "Not a valid Spotify id."}), 400
 
 def _liked_tracks():
     items, url = [], "https://api.spotify.com/v1/me/tracks?limit=50"
@@ -333,14 +384,19 @@ def _liked_tracks():
 
 @app.get("/api/artists")
 def artists():
-    r = _spotify_get(f"https://api.spotify.com/v1/artists?ids={request.args.get('ids','')}")
+    ids = security.spotify_id_list(request.args.get("ids", ""), cap=50)
+    if not ids:
+        return _bad_id()
+    r = _spotify_get(f"https://api.spotify.com/v1/artists?ids={ids}")
     return jsonify(r.json()), r.status_code
 
 @app.get("/api/audio-features")
 def audio_features():
-    ids = request.args.get("ids", "")
-    if not ids:
+    if not request.args.get("ids"):
         return jsonify({"audio_features": []}), 200
+    ids = security.spotify_id_list(request.args.get("ids", ""), cap=100)
+    if not ids:
+        return _bad_id()
     r = _spotify_get(f"https://api.spotify.com/v1/audio-features?ids={ids}")
     # Spotify deprecated audio features for apps registered after Nov 2024.
     # Return an empty list so clients degrade gracefully instead of seeing a 403.
@@ -617,7 +673,7 @@ _PREVIEW_TTL   = 30 * 60           # Deezer URLs expire within hours; stay well 
 _PREVIEW_CACHE_MAX = 4000
 
 def _preview_from_deezer(isrc: str):
-    if not isrc:
+    if not security.is_isrc(isrc):
         return None
     try:
         r = requests.get(f"https://api.deezer.com/track/isrc:{isrc}", timeout=8)
@@ -668,10 +724,11 @@ def _preview_from_embed(track_id: str):
     return None
 
 @app.get("/api/preview")
+@rate_limit("preview", 240, 60)
 def preview():
     isrc     = request.args.get("isrc", "").strip()
-    title    = request.args.get("title", "").strip()
-    artist   = request.args.get("artist", "").strip()
+    title    = request.args.get("title", "").strip()[:200]
+    artist   = request.args.get("artist", "").strip()[:200]
     track_id = request.args.get("track_id", "").strip()
     if not (isrc or title or track_id):
         return jsonify({"error": "Provide isrc, title(+artist) or track_id."}), 400
@@ -723,9 +780,10 @@ def _add_in_batches(pl_id: str, uris: list):
 @app.post("/api/playlist/create")
 def playlist_create():
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
+    name = (body.get("name") or "").strip() if isinstance(body.get("name"), str) else ""
     if not name:
         return jsonify({"error": "Playlist name is required."}), 400
+    name = name[:100]   # Spotify's own limit
     uris, skipped_local = _addable_uris(body.get("uris") or [])
 
     me_r = _spotify_get("https://api.spotify.com/v1/me")
@@ -736,7 +794,8 @@ def playlist_create():
     cr = _spotify_request("POST", f"https://api.spotify.com/v1/users/{user_id}/playlists", {
         "name":        name,
         "public":      bool(body.get("public", False)),
-        "description": body.get("description") or "Created with playlist.lens",
+        "description": (body.get("description") if isinstance(body.get("description"), str) else "")[:300]
+                       or "Created with playlist.lens",
     })
     if cr.status_code not in (200, 201):
         return jsonify(_json_or_error(cr)), cr.status_code
@@ -755,6 +814,8 @@ def playlist_create():
 
 @app.post("/api/playlist/<pl_id>/add")
 def playlist_add(pl_id: str):
+    if not security.is_spotify_id(pl_id):
+        return _bad_id()
     body = request.get_json(silent=True) or {}
     uris, skipped_local = _addable_uris(body.get("uris") or [])
     if not uris:
@@ -766,6 +827,8 @@ def playlist_add(pl_id: str):
 
 @app.post("/api/playlist/<pl_id>/remove")
 def playlist_remove(pl_id: str):
+    if not security.is_spotify_id(pl_id):
+        return _bad_id()
     body = request.get_json(silent=True) or {}
     uris = [u for u in (body.get("uris") or []) if isinstance(u, str) and u.startswith("spotify:")]
     if not uris:
@@ -785,6 +848,8 @@ def playlist_remove(pl_id: str):
 
 @app.post("/api/playlist/<pl_id>/duplicate")
 def playlist_duplicate(pl_id: str):
+    if not security.is_spotify_id(pl_id):
+        return _bad_id()
     """Full private backup of a playlist — used before a destructive trim, so it
     paginates the WHOLE playlist (no 500-track read cap) to never lose tracks."""
     body = request.get_json(silent=True) or {}
@@ -818,7 +883,7 @@ def playlist_duplicate(pl_id: str):
         return jsonify(_json_or_error(me_r)), me_r.status_code
     user_id = me_r.json().get("id")
 
-    backup_name = (body.get("name") or "").strip() or \
+    backup_name = (body.get("name") if isinstance(body.get("name"), str) else "").strip()[:100] or \
         f"playlist.lens backup — {src_name} — {date.today().isoformat()}"
     cr = _spotify_request("POST", f"https://api.spotify.com/v1/users/{user_id}/playlists", {
         "name":        backup_name,
@@ -841,21 +906,29 @@ def playlist_duplicate(pl_id: str):
 
 # ── profile share ─────────────────────────────────────────────
 @app.post("/api/profile/save")
+@rate_limit("profile-save", 20, 60)
 def save_profile():
-    data = request.get_json(silent=True)
+    if (request.content_length or 0) > security.MAX_PROFILE_BYTES:
+        return jsonify({"error": "Profile is too large."}), 413
+    data = security.sanitize_profile(request.get_json(silent=True))
     if not data:
         return jsonify({"error": "No data"}), 400
     code = _gen_code()
     _profiles[code] = data
+    while len(_profiles) > MAX_PROFILES:
+        _profiles.pop(next(iter(_profiles)))
     _save_profiles()
     return jsonify({"code": code})
 
 @app.get("/api/profile/load/<code>")
+@rate_limit("profile-load", 60, 60)   # 2 billion codes at 60/min: guessing one is hopeless
 def load_profile(code: str):
     normalized = code.upper().replace(" ", "")
     if "-" not in normalized and len(normalized) == 6:
         normalized = f"{normalized[:3]}-{normalized[3:]}"
     profile = _profiles.get(normalized)
+    if profile:
+        profile = security.sanitize_profile(profile)   # also cleans codes saved before this check
     if not profile:
         return jsonify({"error": "Profile not found. Check the code and try again."}), 404
     return jsonify(profile)

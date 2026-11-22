@@ -463,8 +463,8 @@ async function boot() {
   const avatarWrap = document.getElementById("avatar-wrap");
   const img = _me.images?.[0]?.url;
   avatarWrap.innerHTML = img
-    ? `<img class="avatar" src="${img}" alt="" />`
-    : `<div class="avatar-ph">${(_me.display_name||"?")[0].toUpperCase()}</div>`;
+    ? `<img class="avatar" src="${esc(img)}" alt="" />`
+    : `<div class="avatar-ph">${esc((_me.display_name||"?")[0].toUpperCase())}</div>`;
   const pls = await api("/api/playlists");
   _allPlaylists = pls.items || [];
   renderPlaylists(_allPlaylists);
@@ -1106,8 +1106,8 @@ function profileCardHTML(p, type) {
   if (!p) return "";
   return `<div class="profile-card">
     <div class="pc-top">
-      <div class="pc-avatar ${type}">${(p.name||"?")[0].toUpperCase()}</div>
-      <div><div class="pc-name">${esc(p.name)}</div><div class="pc-sub">${p.trackCount} tracks · ${p.playlistCount} playlists</div></div>
+      <div class="pc-avatar ${type}">${esc(String(p.name||"?")[0].toUpperCase())}</div>
+      <div><div class="pc-name">${esc(p.name)}</div><div class="pc-sub">${num(p.trackCount)} tracks · ${num(p.playlistCount)} playlists</div></div>
     </div>
     ${p.vibe?`<div class="pc-vibe">${esc(p.vibe)}</div>`:""}
     <div class="pc-genres">${(p.topGenres||[]).slice(0,6).map(([g])=>`<span class="pc-genre-tag">${esc(g)}</span>`).join("")}</div>
@@ -1331,8 +1331,10 @@ function msToTime(ms) {
   const s=Math.floor(ms/1000),m=Math.floor(s/60),h=Math.floor(m/60);
   return h>0?`${h}h ${m%60}m`:`${m}m ${s%60}s`;
 }
-function esc(s)     { return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s)     { return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function escAttr(s) { return esc(s).replace(/'/g,'&#39;'); }
+// Numbers from someone else's shared profile: render only if they really are numbers.
+function num(v)      { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : 0; }
 function logout()   { window.location.href="/logout"; }
 
 // ── Genre normalisation ───────────────────────────────────────────────────────
