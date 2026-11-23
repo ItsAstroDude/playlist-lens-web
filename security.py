@@ -69,8 +69,8 @@ def reset_rate_limits() -> None:
 CSP = "; ".join([
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self'",                       # fonts are self-hosted (static/fonts)
     "img-src 'self' data: https:",
     "connect-src 'self'",
     "object-src 'none'",

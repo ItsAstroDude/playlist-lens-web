@@ -10,7 +10,6 @@ playlist.lens
 [![Flask](https://img.shields.io/badge/Flask-3.1-000000?style=flat-square&logo=flask&logoColor=white)](https://flask.palletsprojects.com)
 [![Spotify API](https://img.shields.io/badge/Spotify_API-1DB954?style=flat-square&logo=spotify&logoColor=white)](https://developer.spotify.com)
 [![Deployed on Render](https://img.shields.io/badge/Deployed_on-Render-46E3B7?style=flat-square&logo=render&logoColor=white)](https://playlist-lens-mobile.onrender.com)
-[![License](https://img.shields.io/badge/License-MIT-090910?style=flat-square)](LICENSE)
 
 [**→ Open the app**](https://playlist-lens-mobile.onrender.com) · [**Mobile version**](https://github.com/ItsAstroDude/playlist-lens-mobile)
 
@@ -22,7 +21,7 @@ playlist.lens
 
 playlist.lens connects to your Spotify account and breaks down every playlist you own — artists, genres, decades, audio profile, popularity spread, and a computed "vibe" label. All in one dark, clean interface.
 
-No third-party data collection. Tokens stay in your session. Analysis runs on your own Spotify data.
+No ads, no analytics, no selling data. Analysis runs on your own Spotify data, fetched live. The server only stores data for three opt-in or on-request features: listening tracking (encrypted Spotify token + saved plays), app crash reports, and share codes. See the [privacy policy](privacy.html) (served at `/privacy`).
 
 ---
 
@@ -44,8 +43,8 @@ No third-party data collection. Tokens stay in your session. Analysis runs on yo
 
 ```
 Backend     Flask 3.1 · Python 3.11 · Gunicorn
-Auth        Spotify OAuth 2.0 (PKCE-safe, CSRF state param)
-Frontend    Vanilla JS · Chart.js 4 · Syne + DM Mono (Google Fonts)
+Auth        Spotify OAuth 2.0 authorization-code flow (client secret stays server-side, CSRF state param)
+Frontend    Vanilla JS · Chart.js 4 · Syne + DM Mono (self-hosted in static/fonts, SIL OFL)
 Deployment  Render (free tier, auto-deploy from GitHub)
 ```
 
@@ -110,6 +109,7 @@ python app.py
 
 | Method | Route | Description |
 |---|---|---|
+| `GET` | `/privacy` | Privacy policy page |
 | `GET` | `/login` | Initiates Spotify OAuth (supports `?mobile=true`) |
 | `GET` | `/callback` | OAuth callback — exchanges code for tokens |
 | `GET` | `/api/me` | Returns the authenticated Spotify user |

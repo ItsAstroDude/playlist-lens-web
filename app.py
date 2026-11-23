@@ -986,6 +986,14 @@ def index():
         return "<h3>Frontend not found</h3>", 404
     return html_path.read_text(encoding="utf-8"), 200, {"Content-Type": "text/html; charset=utf-8"}
 
+@app.get("/privacy")
+def privacy():
+    # Linked from the web footer and the app's Settings; Play Store listing uses it too.
+    page = Path("privacy.html")
+    if not page.exists():
+        return "<h3>Privacy policy not found</h3>", 404
+    return page.read_text(encoding="utf-8"), 200, {"Content-Type": "text/html; charset=utf-8"}
+
 # ── entry ─────────────────────────────────────────────────────
 if __name__ == "__main__":
     if not IS_PRODUCTION:

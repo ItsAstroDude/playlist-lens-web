@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy policy · playlist.lens</title>
+  <link href="/static/fonts/fonts.css" rel="stylesheet" />
+  <style>
+    :root { --g:#53e076; --dark:#13131b; --txt:#e8e8e8; --muted:#8a8a9a; --bdr:rgba(255,255,255,.10); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--dark); color:var(--txt); font-family:'DM Mono',monospace; font-size:14px; line-height:1.75; }
+    main { max-width:720px; margin:0 auto; padding:48px 20px 80px; }
+    .logo { font-family:'Syne',sans-serif; font-weight:800; font-size:22px; color:var(--txt); text-decoration:none; }
+    .logo span { color:var(--g); }
+    h1 { font-family:'Syne',sans-serif; font-weight:800; font-size:32px; line-height:1.2; margin:32px 0 4px; }
+    h2 { font-family:'Syne',sans-serif; font-weight:700; font-size:19px; margin:40px 0 8px; }
+    h3 { font-size:14px; font-weight:500; margin:24px 0 4px; color:var(--g); }
+    p, li { color:var(--txt); }
+    .meta { color:var(--muted); font-size:12px; margin:0 0 24px; }
+    ul { padding-left:20px; }
+    li { margin:4px 0; }
+    a { color:var(--g); text-underline-offset:3px; }
+    a:focus-visible { outline:2px solid var(--g); outline-offset:2px; }
+    .box { border:1px solid var(--bdr); border-radius:14px; padding:4px 18px; background:rgba(255,255,255,.03); }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:left; vertical-align:top; padding:8px 8px 8px 0; border-bottom:1px solid var(--bdr); }
+    th { color:var(--muted); font-weight:400; }
+    @media (max-width:560px) { table, tbody, tr, td, th { display:block; } thead { display:none; } td { border:none; padding:2px 0; } tr { border-bottom:1px solid var(--bdr); padding:10px 0; } td:first-child { font-weight:500; color:var(--g); } }
+  </style>
+</head>
+<body>
+<main>
+  <a class="logo" href="/">playlist<span>.</span>lens</a>
+  <h1>Privacy policy</h1>
+  <p class="meta">Last updated 23 November 2026 · covers the playlist.lens website and the playlist.lens Android/iOS app</p>
+
+  <div class="box">
+    <p><b>The short version.</b> playlist.lens reads your Spotify data to show you stats about it. No ads, no analytics, no selling data.
+    By default the server stores nothing about you. It only keeps data for three features: listening tracking (if you turn it on),
+    crash reports from the app (you can turn these off), and share codes (if you make one).</p>
+  </div>
+
+  <h2>Who runs this</h2>
+  <p>playlist.lens is an independent, non-commercial hobby project. It is <b>not</b> made, endorsed or sponsored by Spotify.
+  For any privacy question or request, open an issue at
+  <a href="https://github.com/ItsAstroDude/playlist-lens-web/issues">github.com/ItsAstroDude/playlist-lens-web/issues</a>.
+  Issues are public, so don't put personal details in them. Say what you need and we'll reply there.</p>
+
+  <h2>What playlist.lens can see in your Spotify account</h2>
+  <p>When you log in, Spotify asks you to allow these permissions:</p>
+  <ul>
+    <li>your profile (display name, picture, country and subscription type)</li>
+    <li>your playlists, including private and collaborative ones, and your Liked Songs</li>
+    <li>what you're playing now, your recently played tracks, and your top artists and tracks</li>
+    <li>your devices and playback, so the app can start and queue music for you</li>
+    <li>permission to create and edit playlists. This is only used when you ask it to, for example saving a refreshed copy of a playlist</li>
+  </ul>
+  <p>Almost all of this is fetched when you open a screen, shown to you, and not stored on our server.
+  You can withdraw access at any time at <a href="https://www.spotify.com/account/apps/">spotify.com/account/apps</a>.</p>
+
+  <h2>What is stored, where, and for how long</h2>
+
+  <h3>On your device</h3>
+  <ul>
+    <li><b>Website:</b> one cookie holds your Spotify sign-in for this browser. It is signed, can't be read by scripts on the page,
+    and is only sent over HTTPS. It's strictly necessary for the site to work, so there's no cookie banner.
+    Pressing <i>disconnect</i> removes the sign-in. There are no analytics or advertising cookies.</li>
+    <li><b>App:</b> your Spotify sign-in is kept in the phone's secure storage. Analysis results, settings and any listening history you
+    import from a Spotify data download are kept in the app's own storage on your phone. Photos you pick as custom covers stay on your phone.
+    Logging out deletes all of this from the phone.</li>
+  </ul>
+
+  <h3>On our server</h3>
+  <table>
+    <thead><tr><th>What</th><th>Details</th><th>How long</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Listening tracking<br>(app, off by default)</td>
+        <td>If you turn on <i>Listening tracking</i>, the server saves your recent plays every hour so weekly and monthly stats are complete.
+        It stores your Spotify user ID, an <b>encrypted</b> Spotify sign-in (refresh token), and for each play: the time, track, artists,
+        album, cover-art link and length.</td>
+        <td>Until you turn tracking off, which deletes the token and every saved play. When you log out, the app asks whether to stop tracking.</td>
+      </tr>
+      <tr>
+        <td>Crash reports<br>(app)</td>
+        <td>When the app hits an error it sends the error message, technical stack trace, app version and update, platform (Android/iOS)
+        and the screen you were on, linked to your Spotify user ID. Nothing else about you is included.
+        Turn this off in Settings › About.</td>
+        <td>The newest 500 per account. Delete them any time from Settings › About › Labs › Errors › Clear.</td>
+      </tr>
+      <tr>
+        <td>Share codes<br>(web and app)</td>
+        <td>When you create a share code for your taste profile, the server stores the profile: your display name, top artists and genres,
+        track/playlist/artist counts, audio averages and vibe label. <b>Anyone who has the code can view it.</b></td>
+        <td>Until it's pushed out by newer codes (the server keeps the newest 20,000) or the server's storage is reset.
+        To have one removed sooner, open an issue (see above) with the code.</td>
+      </tr>
+      <tr>
+        <td>Basic request data</td>
+        <td>Like any website, the server sees your IP address with each request. It's held in memory for up to a few minutes to limit abuse.
+        Our host also keeps standard request logs (IP address, time, address requested).</td>
+        <td>Rate-limit data: minutes. Host logs: per the host's retention.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Services we use</h2>
+  <ul>
+    <li><b>Spotify</b>: your account data comes from the Spotify Web API. Spotify's own privacy policy applies to your Spotify account.</li>
+    <li><b>Render</b>: hosts the server (United States).</li>
+    <li><b>Neon</b>: the database for listening tracking and crash reports.</li>
+    <li><b>Expo</b>: delivers app updates. The app checks Expo's servers for updates, which shows them your IP address and app/device details.</li>
+    <li><b>jsDelivr</b>: the website loads its chart library from jsDelivr's network, so your browser contacts it.</li>
+    <li><b>Deezer, Apple (iTunes) and Spotify's public player</b>: to find 30-second song previews, our <i>server</i> looks songs up by
+    track ID, ISRC code or title and artist. Nothing about you is sent.</li>
+    <li><b>GitHub</b>: a scheduled job starts the hourly tracking run. It carries no personal data.</li>
+  </ul>
+  <p>Some of these providers are outside the UK and EU (mainly the United States). They process data under their own
+  data-protection terms, including standard contractual clauses where those apply.</p>
+
+  <h2>Why we use your data (legal basis)</h2>
+  <ul>
+    <li>Showing your stats, playlists and playback: to provide the service you asked for.</li>
+    <li>Listening tracking: your consent, which you give by turning it on and withdraw by turning it off.</li>
+    <li>Crash reports and abuse limits: our legitimate interest in keeping the app working and the server safe. You can turn crash reports off.</li>
+    <li>Share codes: your request when you create one.</li>
+  </ul>
+
+  <h2>Your rights</h2>
+  <p>Depending on where you live (for example under the GDPR in the EU or UK), you can ask to see, correct, export or delete your data,
+  object to how it's used, or complain to your data-protection authority. Most of this you can do yourself:</p>
+  <ul>
+    <li>Turn off listening tracking: deletes all tracking data on the server.</li>
+    <li>Settings › About › Labs › Errors › Clear: deletes your crash reports on the server.</li>
+    <li>Log out or disconnect: deletes your data from the phone or browser.</li>
+    <li>Remove playlist.lens at <a href="https://www.spotify.com/account/apps/">spotify.com/account/apps</a>: cuts off its access to Spotify.</li>
+  </ul>
+  <p>For anything else, such as a share code or a copy of your data, open an issue as described above.</p>
+
+  <h2>Children</h2>
+  <p>playlist.lens isn't aimed at children. You need a Spotify account to use it, so Spotify's minimum age applies.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the date at the top changes too. Significant changes will be mentioned in the app's <i>What's new</i>.</p>
+
+  <p style="margin-top:48px"><a href="/">← back to playlist.lens</a></p>
+</main>
+</body>
+</html>
