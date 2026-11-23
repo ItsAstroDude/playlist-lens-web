@@ -466,6 +466,35 @@ def playback_devices():
     } for d in data.get("devices", [])]
     return jsonify({"devices": devices})
 
+def _slim_track(t: dict | None) -> dict | None:
+    """A queue entry, trimmed: tracks only (episodes and empty slots → None)."""
+    if not t or t.get("type", "track") != "track":
+        return None
+    images = (t.get("album") or {}).get("images") or []
+    # Spotify lists images largest first; the middle one (~300 px) is plenty for a card.
+    image = images[min(1, len(images) - 1)].get("url") if images else None
+    return {
+        "id":          t.get("id"),
+        "uri":         t.get("uri"),
+        "name":        t.get("name"),
+        "duration_ms": t.get("duration_ms"),
+        "artists":     [a.get("name") for a in t.get("artists", [])],
+        "image":       image,
+    }
+
+@app.get("/api/playback/upnext")
+def playback_upnext():
+    """What plays next on the user's Spotify (the half-folded "up next" view), trimmed
+    to `limit` tracks (default 10, max 20). Requires user-read-playback-state; an old
+    token gets Spotify's 403 passed through → the app's reconnect prompt."""
+    r = _spotify_get("https://api.spotify.com/v1/me/player/queue")
+    if not r.ok:
+        return jsonify(_json_or_error(r)), r.status_code
+    data = _json_or_error(r)
+    limit = _clamp_limit(request.args.get("limit"), default=10, hi=20)
+    queue = [x for x in (_slim_track(t) for t in data.get("queue") or []) if x][:limit]
+    return jsonify({"current": _slim_track(data.get("currently_playing")), "queue": queue})
+
 @app.put("/api/playback/play")
 def playback_play():
     """Start an ordered queue immediately. Body: {uris:[...], device_id?}. Plays the
