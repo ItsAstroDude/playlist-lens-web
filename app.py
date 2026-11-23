@@ -497,10 +497,11 @@ def playback_upnext():
 
 @app.put("/api/playback/play")
 def playback_play():
-    """Start an ordered queue immediately. Body: {uris:[...], device_id?}. Plays the
-    first ≤100 URIs in exact order; pass device_id to transfer-and-start onto an idle
-    device (the 'present but not active' onboarding state). Append anything beyond the
-    first batch via /api/playback/queue. Requires user-modify-playback-state + Premium."""
+    """Start an ordered queue immediately. Body: {uris:[...], device_id?, position_ms?}.
+    Plays the first ≤100 URIs in exact order; pass device_id to transfer-and-start onto
+    an idle device (the 'present but not active' onboarding state). position_ms starts
+    the first song partway in (the Blind five game). Append anything beyond the first
+    batch via /api/playback/queue. Requires user-modify-playback-state + Premium."""
     body = request.get_json(silent=True) or {}
     uris, skipped_local = _addable_uris(body.get("uris") or [])
     if not uris:
@@ -512,7 +513,14 @@ def playback_play():
         url += f"?device_id={device_id}"
 
     # /play accepts up to 100 URIs in one body; the client appends the rest.
-    r = _spotify_request("PUT", url, {"uris": uris[:100]})
+    payload = {"uris": uris[:100]}
+    try:
+        pos = int(body.get("position_ms") or 0)
+    except (TypeError, ValueError):
+        pos = 0
+    if pos > 0:
+        payload["position_ms"] = min(pos, 60 * 60 * 1000)
+    r = _spotify_request("PUT", url, payload)
     if r.status_code not in (200, 202, 204):
         return jsonify(_json_or_error(r)), r.status_code
     return jsonify({"started": min(len(uris), 100), "skipped_local": skipped_local})
