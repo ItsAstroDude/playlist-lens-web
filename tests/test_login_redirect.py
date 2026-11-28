@@ -9,5 +9,8 @@ def test_app_schemes_allowed():
 
 
 def test_everything_else_falls_back():
-    for url in ("https://evil.example/steal", "http://localhost/x", "javascript:alert(1)", "", "soundwave", "//evil"):
+    for url in ("https://evil.example/steal", "http://localhost/x", "javascript:alert(1)", "", "soundwave", "//evil",
+                "exp+x://expo-development-client/?url=https://evil.example",          # someone else's dev client
+                "exp+soundwave://expo-development-client/?url=https://evil.example",  # loads that server
+                "exp://evil.example\\@127.0.0.1/x", "exp://evil.example@192.168.1.5/x"):
         assert _safe_mobile_redirect(url) == MOBILE_SCHEME

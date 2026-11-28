@@ -1,4 +1,5 @@
 """Security checks: each test is one way someone might try to break playlist.lens."""
+import json
 import os
 import sys
 
@@ -23,8 +24,8 @@ class Resp:
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     security.reset_rate_limits()
-    monkeypatch.setattr(app_module, "_profiles", {})
-    monkeypatch.setattr(app_module, "PROFILES_FILE", tmp_path / "profiles.json")
+    import tracking
+    tracking.reset_engine_for_tests(f"sqlite:///{tmp_path}/t.db")
     app.config["TESTING"] = True
     with app.test_client() as c:
         yield c
@@ -74,7 +75,9 @@ def test_shared_profile_is_sanitised(client):
 
 
 def test_profiles_saved_before_the_fix_are_cleaned_on_load(client):
-    app_module._profiles["OLD-ONE"] = {"name": "x", "trackCount": XSS}
+    with app_module._profiles_db().begin() as c:
+        c.execute(app_module.sql_text("INSERT INTO profiles VALUES ('OLD-ONE', :d, 1)"),
+                  {"d": json.dumps({"name": "x", "trackCount": XSS})})
     assert client.get("/api/profile/load/OLDONE").json["trackCount"] == 0
 
 
@@ -195,12 +198,14 @@ def test_huge_profiles_are_refused(client):
 def test_profile_store_is_capped(client, monkeypatch):
     monkeypatch.setattr(app_module, "MAX_PROFILES", 3)
     codes = [client.post("/api/profile/save", json={"name": str(i)}).json["code"] for i in range(5)]
-    assert list(app_module._profiles) == codes[-3:]
+    with app_module._profiles_db().connect() as c:
+        kept = c.execute(app_module.sql_text("SELECT code FROM profiles ORDER BY created_at")).scalars().all()
+    assert kept == codes[-3:]
 
 
 def test_profile_spam_gets_rate_limited(client):
-    codes = [client.post("/api/profile/save", json={"name": "x"}).status_code for _ in range(22)]
-    assert codes[:20] == [200] * 20 and codes[20:] == [429, 429]
+    codes = [client.post("/api/profile/save", json={"name": "x"}).status_code for _ in range(7)]
+    assert codes[:5] == [200] * 5 and codes[5:] == [429, 429]
 
 
 @pytest.mark.parametrize("limit", ["-1", "0", "99999", "abc", "1e9"])

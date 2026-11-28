@@ -35,20 +35,23 @@ def play(ts, name="Song", uri=None):
 def spotify(monkeypatch, tmp_path):
     tracking.reset_engine_for_tests(f"sqlite:///{tmp_path}/t.db")
     tracking._id_cache.clear()
+    import security; security.reset_rate_limits()  # many tests enroll; the limit is 10/min
     state = {"recent": [play("2026-11-17T10:00:00.000Z", "A"), play("2026-11-17T10:04:00.000Z", "B")],
-             "refresh_ok": True, "rotated": None}
+             "refresh_ok": True, "rotated": None, "refresh_status": 400, "recent_status": 200, "me_status": 200}
 
     def post(url, **kw):
         if not state["refresh_ok"]:
-            return Resp(400, {"error": "invalid_grant"})
+            return Resp(state["refresh_status"], {"error": "invalid_grant"})
         return Resp(200, {"access_token": "acc-" + kw["data"]["refresh_token"], "refresh_token": state["rotated"]})
 
     def get(url, headers=None, **kw):
         tok = headers["Authorization"].split()[1]
         if url.endswith("/me"):
+            if state["me_status"] != 200:
+                return Resp(state["me_status"], {})
             return Resp(200, {"id": "user1"}) if tok.startswith("acc-") or tok == "app-token" else Resp(401, {})
         if "recently-played" in url:
-            return Resp(200, {"items": state["recent"]})
+            return Resp(state["recent_status"], {"items": state["recent"]})
         return Resp(404, {})
 
     monkeypatch.setattr(tracking.requests, "post", post)
@@ -139,3 +142,60 @@ def test_any_random_string_works_as_tracking_key(spotify, client, monkeypatch):
     enc = tracking._encrypt("rt1")
     assert tracking._decrypt(enc) == "rt1"
     assert client.post("/api/tracking/enroll", json={"refresh_token": "rt1"}).status_code == 200
+
+
+POLL = {"X-Cron-Secret": "s3cret"}
+
+def _user_row():
+    with tracking.engine().connect() as c:
+        return c.execute(tracking.text("SELECT * FROM tracked_users")).first()
+
+
+def test_spotify_outage_never_pauses(spotify, client):
+    client.post("/api/tracking/enroll", json={"refresh_token": "rt1"})
+    spotify["refresh_ok"], spotify["refresh_status"] = False, 503
+    for _ in range(tracking.MAX_FAILS + 2):
+        assert client.post("/api/tracking/poll", headers=POLL).status_code == 502  # every user failed
+    u = _user_row()
+    assert u.status == "active" and u.fail_count == 0
+
+
+def test_rotated_token_kept_when_fetch_fails(spotify, client):
+    client.post("/api/tracking/enroll", json={"refresh_token": "rt1"})
+    spotify["rotated"], spotify["recent_status"] = "rt2", 429
+    client.post("/api/tracking/poll", headers=POLL)
+    assert tracking._decrypt(_user_row().refresh_enc) == "rt2"
+
+
+def test_spotify_blip_on_me_is_502_not_401(spotify, client):
+    spotify["me_status"] = 503
+    assert client.get("/api/tracking/status", headers=AUTH).status_code == 502
+    spotify["me_status"] = 401
+    assert client.get("/api/tracking/status", headers=AUTH).status_code == 401
+
+
+def test_save_plays_tolerates_a_concurrent_duplicate(spotify, client):
+    client.post("/api/tracking/enroll", json={"refresh_token": "rt1"})
+    dup = {"played_at": "2026-11-17T10:00:00.000Z", "track_uri": "u", "track_name": "A", "artists": "[]",
+           "album": None, "album_image": None, "duration_ms": 1}
+    with tracking.engine().begin() as c:
+        # Simulate the other poll winning the race: the row exists but our SELECT missed it.
+        c.execute(tracking.text("DELETE FROM plays"))
+        c.execute(tracking.text("INSERT INTO plays (user_id, played_at) VALUES ('user1', :t)"), {"t": dup["played_at"]})
+        orig = c.execute
+        c.execute = lambda q, *a, **k: [] if "SELECT played_at" in str(q) else orig(q, *a, **k)
+        tracking.save_plays(c, "user1", [dup])  # must not raise IntegrityError
+
+
+def test_opt_out_during_poll_leaves_nothing(spotify, client, monkeypatch):
+    client.post("/api/tracking/enroll", json={"refresh_token": "rt1"})
+    spotify["recent"].append(play("2026-11-17T10:08:00.000Z", "C"))
+    real = tracking._exchange_refresh
+    def opt_out_mid_poll(rt):
+        # The user taps "delete my data" (its own request + transaction) after the poll began.
+        assert client.delete("/api/tracking", headers=AUTH).status_code == 200
+        return real(rt)
+    monkeypatch.setattr(tracking, "_exchange_refresh", opt_out_mid_poll)
+    client.post("/api/tracking/poll", headers=POLL)
+    with tracking.engine().connect() as c:
+        assert c.execute(tracking.text("SELECT COUNT(*) FROM plays")).scalar() == 0
