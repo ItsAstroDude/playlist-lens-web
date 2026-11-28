@@ -19,6 +19,7 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 
 import tracking
+from security import rate_limit
 
 bp = Blueprint("errors", __name__)
 
@@ -58,6 +59,7 @@ def _clip(v, n: int) -> str | None:
 
 
 @bp.post("/api/errors")
+@rate_limit("errors", 60, 60)
 def post_errors():
     uid, status = tracking._caller_id()
     if not uid:
@@ -96,6 +98,7 @@ def post_errors():
 
 
 @bp.get("/api/errors")
+@rate_limit("errors", 60, 60)
 def get_errors():
     uid, status = tracking._caller_id()
     if not uid:
@@ -116,6 +119,7 @@ def get_errors():
 
 
 @bp.delete("/api/errors")
+@rate_limit("errors", 60, 60)
 def delete_errors():
     uid, status = tracking._caller_id()
     if not uid:

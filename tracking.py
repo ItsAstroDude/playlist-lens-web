@@ -142,9 +142,14 @@ def _exchange_refresh(refresh_token: str) -> tuple[str | None, str | None, int]:
     return d.get("access_token"), d.get("refresh_token"), 200
 
 def _me_id(access_token: str) -> tuple[str | None, int]:
-    r = requests.get(f"{SPOTIFY_API}/me", headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+    """→ (user_id, status). Status is 401 only when the token itself is bad; a Spotify
+    outage or rate limit is 502, so the app doesn't sign the user out over it."""
+    try:
+        r = requests.get(f"{SPOTIFY_API}/me", headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+    except requests.RequestException:
+        return None, 502
     if not r.ok:
-        return None, r.status_code
+        return None, 401 if r.status_code in (400, 401, 403) else 502
     return r.json().get("id"), 200
 
 # Bearer → Spotify user id, cached briefly so the plays feed doesn't hit /me every call.
@@ -165,6 +170,11 @@ def _caller_id() -> tuple[str | None, int]:
         if len(_id_cache) > 2000:
             _id_cache.clear()
     return uid, status
+
+def _auth_error(st: int):
+    if st == 401:
+        return jsonify({"error": "Not authenticated."}), 401
+    return jsonify({"error": "Spotify is unavailable — try again shortly."}), 502
 
 def _fetch_recent(access_token: str) -> tuple[list[dict], int]:
     r = requests.get(
@@ -191,6 +201,10 @@ def _fetch_recent(access_token: str) -> tuple[list[dict], int]:
     return [p for p in out if p["played_at"]], 200
 
 
+class UserGone(Exception):
+    """The user was deleted (opted out) during their poll."""
+
+
 # ── core ──────────────────────────────────────────────────────────────────────
 def save_plays(conn, user_id: str, plays: list[dict]) -> int:
     """Insert plays, ignoring ones already stored. Returns how many were new."""
@@ -207,6 +221,7 @@ def save_plays(conn, user_id: str, plays: list[dict]) -> int:
         conn.execute(text("""
             INSERT INTO plays (user_id, played_at, track_uri, track_name, artists, album, album_image, duration_ms)
             VALUES (:user_id, :played_at, :track_uri, :track_name, :artists, :album, :album_image, :duration_ms)
+            ON CONFLICT (user_id, played_at) DO NOTHING
         """), new)
     return len(new)
 
@@ -221,13 +236,24 @@ def poll_user(conn, row) -> dict:
 
     access, rotated, st = _exchange_refresh(rt)
     if not access:
-        # 400 invalid_grant = the user revoked access → pause after repeated failures.
-        fails = (row.fail_count or 0) + 1
-        conn.execute(
-            text("UPDATE tracked_users SET fail_count=:f, status=:s WHERE user_id=:u"),
-            {"f": fails, "s": "paused" if fails >= MAX_FAILS else "active", "u": uid},
-        )
+        # 400/401 = the user revoked access → pause after repeated failures. A Spotify
+        # outage or rate limit (429/5xx) says nothing about the user, so it doesn't count.
+        if st in (400, 401):
+            fails = (row.fail_count or 0) + 1
+            conn.execute(
+                text("UPDATE tracked_users SET fail_count=:f, status=:s WHERE user_id=:u"),
+                {"f": fails, "s": "paused" if fails >= MAX_FAILS else "active", "u": uid},
+            )
         return {"user": uid, "error": f"refresh {st}"}
+
+    # Store a rotated token now: the old one may already be dead if the fetch below fails.
+    if rotated:
+        kept = conn.execute(
+            text("UPDATE tracked_users SET refresh_enc=:enc WHERE user_id=:u"),
+            {"enc": _encrypt(rotated), "u": uid},
+        ).rowcount
+        if not kept:
+            return {"user": uid, "gone": True}
 
     plays, st = _fetch_recent(access)
     if st != 200:
@@ -241,12 +267,14 @@ def poll_user(conn, row) -> dict:
     gap = bool(newest_held and len(plays) == 50 and min(p["played_at"] for p in plays) > newest_held)
 
     added = save_plays(conn, uid, plays)
-    conn.execute(text("""
+    kept = conn.execute(text("""
         UPDATE tracked_users
-           SET last_polled_at=:t, fail_count=0, status='active', gaps=gaps + :g,
-               refresh_enc=COALESCE(:enc, refresh_enc)
+           SET last_polled_at=:t, fail_count=0, status='active', gaps=gaps + :g
          WHERE user_id=:u
-    """), {"t": _now_iso(), "g": 1 if gap else 0, "enc": _encrypt(rotated) if rotated else None, "u": uid})
+    """), {"t": _now_iso(), "g": 1 if gap else 0, "u": uid}).rowcount
+    if not kept:
+        # The user opted out while we were polling: roll back the plays we just saved.
+        raise UserGone(uid)
     return {"user": uid, "added": added, "gap": gap}
 
 
@@ -284,12 +312,13 @@ def enroll():
     return jsonify({"enrolled": True, "backfilled": added, "refresh_token": rotated})
 
 @bp.get("/api/tracking/status")
+@rate_limit("tracking", 120, 60)
 def status():
     if not enabled():
         return jsonify({"available": False, "enrolled": False})
     uid, st = _caller_id()
     if not uid:
-        return jsonify({"error": "Not authenticated."}), 401
+        return _auth_error(st)
     with engine().connect() as c:
         u = c.execute(text("SELECT * FROM tracked_users WHERE user_id=:u"), {"u": uid}).first()
         if not u:
@@ -304,12 +333,13 @@ def status():
     })
 
 @bp.get("/api/tracking/plays")
+@rate_limit("tracking", 120, 60)
 def plays():
     if not enabled():
         return _disabled()
     uid, st = _caller_id()
     if not uid:
-        return jsonify({"error": "Not authenticated."}), 401
+        return _auth_error(st)
     after = (request.args.get("after") or "").strip()
     try:
         limit = max(1, min(int(request.args.get("limit", PLAYS_PAGE_MAX)), PLAYS_PAGE_MAX))
@@ -331,12 +361,13 @@ def plays():
     return jsonify({"items": items, "more": len(items) == limit})
 
 @bp.delete("/api/tracking")
+@rate_limit("tracking", 120, 60)
 def unenroll():
     if not enabled():
         return _disabled()
     uid, st = _caller_id()
     if not uid:
-        return jsonify({"error": "Not authenticated."}), 401
+        return _auth_error(st)
     with engine().begin() as c:
         c.execute(text("DELETE FROM plays WHERE user_id=:u"), {"u": uid})
         c.execute(text("DELETE FROM tracked_users WHERE user_id=:u"), {"u": uid})
@@ -357,10 +388,11 @@ def poll():
         try:
             with engine().begin() as c:
                 results.append(poll_user(c, u))
+        except UserGone:
+            results.append({"user": u.user_id, "gone": True})
         except Exception as e:  # noqa: BLE001 — log and keep polling everyone else
             results.append({"user": u.user_id, "error": type(e).__name__})
-    return jsonify({
-        "polled": len(results),
-        "added": sum(r.get("added", 0) for r in results),
-        "errors": sum(1 for r in results if "error" in r),
-    })
+    errors = sum(1 for r in results if "error" in r)
+    body = {"polled": len(results), "added": sum(r.get("added", 0) for r in results), "errors": errors}
+    # Every user failing means the server or Spotify is broken: fail so the workflow shows red.
+    return jsonify(body), 502 if results and errors == len(results) else 200

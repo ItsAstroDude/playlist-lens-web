@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import string
+import threading
 import time
 import webbrowser
 from datetime import date
@@ -18,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlencode, quote, urlsplit
 
 import requests
+from sqlalchemy import text as sql_text
 from flask import Flask, jsonify, redirect, request, session
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -46,14 +48,22 @@ MOBILE_SCHEME = "playlistlens://callback"
 # host. So exp:// only counts when it points at localhost or a LAN address, which is
 # where a real dev server runs.
 _APP_SCHEMES = {"playlistlens", "soundwave"}
+# Expo dev builds of the family's own apps. A dev client also LOADS a `url=` it is
+# handed, so that is refused too (same attack as exp://attacker).
+_DEV_SCHEMES = {"exp+playlist-lens-mobile", "exp+soundwave"}
 
 def _safe_mobile_redirect(url: str) -> str:
     url = url or ""
     scheme = url.split(":", 1)[0].lower()
     if "://" not in url:
         return MOBILE_SCHEME
-    if scheme in _APP_SCHEMES or scheme.startswith("exp+"):
+    if scheme in _APP_SCHEMES:
         return url
+    # "\" / "@" / spaces make Python and the phone read different hosts out of one URL.
+    if any(ch in url for ch in "\\@ \t\r\n"):
+        return MOBILE_SCHEME
+    if scheme in _DEV_SCHEMES:
+        return MOBILE_SCHEME if "url=" in url.lower() else url
     if scheme == "exp":
         try:
             host = urlsplit(url).hostname or ""
@@ -116,26 +126,50 @@ if IS_PRODUCTION and not os.environ.get("SECRET_KEY"):
     print("WARNING: SECRET_KEY env var is not set — web sessions will not persist "
           "across restarts or workers. Set a fixed SECRET_KEY on Render.")
 
-_profiles: dict = {}
-MAX_PROFILES = 20_000   # oldest share codes are dropped past this
+# Share profiles live in the tracker's database (DATABASE_URL), like the error reports:
+# a file on Render's disk was wiped on every deploy and raced between threads.
+MAX_PROFILES = 5_000    # oldest share codes are dropped past this (~20 KB each at most)
 
-PROFILES_FILE = Path("profiles.json")
+_profiles_migrated: set[int] = set()
 
-def _load_profiles():
-    if PROFILES_FILE.exists():
-        try:
-            return json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
+def _profiles_db():
+    import tracking
+    e = tracking.engine()
+    if id(e) not in _profiles_migrated:
+        with e.begin() as c:
+            c.execute(sql_text("""
+                CREATE TABLE IF NOT EXISTS profiles (
+                    code       TEXT PRIMARY KEY,
+                    data       TEXT NOT NULL,
+                    created_at BIGINT NOT NULL
+                )"""))
+            c.execute(sql_text("CREATE INDEX IF NOT EXISTS profiles_created ON profiles (created_at)"))
+        _profiles_migrated.add(id(e))
+    return e
 
-def _save_profiles():
-    try:
-        PROFILES_FILE.write_text(json.dumps(_profiles, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+def _store_profile(data: dict) -> str:
+    with _profiles_db().begin() as c:
+        # Strictly increasing, so "oldest" is well defined even within one clock tick.
+        newest = c.execute(sql_text("SELECT MAX(created_at) FROM profiles")).scalar() or 0
+        now = max(time.time_ns(), newest + 1)
+        for _ in range(100):
+            code = _gen_code()
+            if c.execute(sql_text(
+                "INSERT INTO profiles (code, data, created_at) VALUES (:c, :d, :t) ON CONFLICT (code) DO NOTHING"
+            ), {"c": code, "d": json.dumps(data, ensure_ascii=False), "t": now}).rowcount:
+                break
+        else:
+            raise RuntimeError("Could not generate unique code")
+        cut = c.execute(sql_text("SELECT created_at FROM profiles ORDER BY created_at DESC LIMIT 1 OFFSET :n"),
+                        {"n": MAX_PROFILES}).scalar()
+        if cut is not None:
+            c.execute(sql_text("DELETE FROM profiles WHERE created_at <= :t"), {"t": cut})
+    return code
 
-_profiles = _load_profiles()
+def _get_profile(code: str) -> dict | None:
+    with _profiles_db().connect() as c:
+        raw = c.execute(sql_text("SELECT data FROM profiles WHERE code=:c"), {"c": code}).scalar()
+    return json.loads(raw) if raw else None
 
 # ── helpers ───────────────────────────────────────────────────
 
@@ -162,10 +196,18 @@ def _refresh() -> bool:
         data={"grant_type": "refresh_token", "refresh_token": rt},
         timeout=10,
     )
-    if r.ok:
-        session["access_token"] = r.json()["access_token"]
-        return True
-    return False
+    if not r.ok:
+        return False
+    try:
+        d = r.json()
+    except ValueError:
+        return False
+    if not d.get("access_token"):
+        return False
+    session["access_token"] = d["access_token"]
+    # Spotify may rotate the refresh token; the old one can stop working after that.
+    session["refresh_token"] = d.get("refresh_token") or rt
+    return True
 
 def _spotify_request(method: str, url: str, payload: dict | None = None) -> requests.Response:
     # Two ISOLATED token sources, never a shared global:
@@ -224,12 +266,8 @@ def _gen_code() -> str:
     # `secrets`, not `random`: share codes are the only thing guarding a profile, so
     # they must not be predictable from earlier ones.
     chars = string.ascii_uppercase + string.digits
-    for _ in range(100):
-        raw = "".join(secrets.choice(chars) for _ in range(6))
-        code = f"{raw[:3]}-{raw[3:]}"
-        if code not in _profiles:
-            return code
-    raise RuntimeError("Could not generate unique code")
+    raw = "".join(secrets.choice(chars) for _ in range(6))
+    return f"{raw[:3]}-{raw[3:]}"
 
 # ── auth ──────────────────────────────────────────────────────
 @app.get("/login")
@@ -760,6 +798,10 @@ def _preview_from_embed(track_id: str):
         pass
     return None
 
+# Uncached lookups wait on up to 3 outside calls (8 s each). Only a few at once, so a
+# flood of fresh titles can't hold every server thread; the rest are told to retry.
+_preview_slots = threading.BoundedSemaphore(3)
+
 @app.get("/api/preview")
 @rate_limit("preview", 240, 60)
 def preview():
@@ -776,14 +818,21 @@ def preview():
     if cached and cached[0] > now:
         return jsonify(cached[1])
 
-    url, source = None, None
-    for src, resolve in (("deezer",  lambda: _preview_from_deezer(isrc)),
-                         ("spotify-embed", lambda: _preview_from_embed(track_id)),
-                         ("itunes",  lambda: _preview_from_itunes(artist, title))):
-        url = resolve()
-        if url:
-            source = src
-            break
+    if not _preview_slots.acquire(blocking=False):
+        resp = jsonify({"error": "Busy — try again in a moment."})
+        resp.status_code, resp.headers["Retry-After"] = 503, "2"
+        return resp
+    try:
+        url, source = None, None
+        for src, resolve in (("deezer",  lambda: _preview_from_deezer(isrc)),
+                             ("spotify-embed", lambda: _preview_from_embed(track_id)),
+                             ("itunes",  lambda: _preview_from_itunes(artist, title))):
+            url = resolve()
+            if url:
+                source = src
+                break
+    finally:
+        _preview_slots.release()
 
     result = {"preview_url": url, "source": source}  # url None = nothing found, app skips/swipes on art
     if len(_preview_cache) >= _PREVIEW_CACHE_MAX:
@@ -943,19 +992,14 @@ def playlist_duplicate(pl_id: str):
 
 # ── profile share ─────────────────────────────────────────────
 @app.post("/api/profile/save")
-@rate_limit("profile-save", 20, 60)
+@rate_limit("profile-save", 5, 60)   # a real user shares a few times; spam would evict real codes
 def save_profile():
     if (request.content_length or 0) > security.MAX_PROFILE_BYTES:
         return jsonify({"error": "Profile is too large."}), 413
     data = security.sanitize_profile(request.get_json(silent=True))
     if not data:
         return jsonify({"error": "No data"}), 400
-    code = _gen_code()
-    _profiles[code] = data
-    while len(_profiles) > MAX_PROFILES:
-        _profiles.pop(next(iter(_profiles)))
-    _save_profiles()
-    return jsonify({"code": code})
+    return jsonify({"code": _store_profile(data)})
 
 @app.get("/api/profile/load/<code>")
 @rate_limit("profile-load", 60, 60)   # 2 billion codes at 60/min: guessing one is hopeless
@@ -963,7 +1007,7 @@ def load_profile(code: str):
     normalized = code.upper().replace(" ", "")
     if "-" not in normalized and len(normalized) == 6:
         normalized = f"{normalized[:3]}-{normalized[3:]}"
-    profile = _profiles.get(normalized)
+    profile = _get_profile(normalized)
     if profile:
         profile = security.sanitize_profile(profile)   # also cleans codes saved before this check
     if not profile:
